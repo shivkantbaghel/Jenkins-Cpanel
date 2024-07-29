@@ -1,0 +1,67 @@
+pipeline {
+    agent any
+    parameters {
+        string(name: 'remote_url', defaultValue: 'abc.com', description: 'Link of the project')
+        string(name: 'project_name', defaultValue: 'demo', description: 'Name of the project')
+        string(name: 'repo_url', defaultValue: 'https://github.com/gothinkster/angular-realworld-example-app.git', description: 'Link of the Repository')
+        string(name: 'branch_name', defaultValue: 'release/alpha', description: 'Branch name from where code will be picked for Live')
+        string(name: 'build_command', defaultValue: 'ng build --c staging --base-href /demo/', description: 'Command for making build of the project')
+        string(name: 'workspace', defaultValue: slack_workspace, description: 'Slack Workspace for Integration')
+        string(name: 'channel', defaultValue: slack_channel, description: 'Slack Channel for Notification')
+        string(name: 'workspace_credential', defaultValue: slack_workspace_credential_id, description: 'Slack Workspace Credential Id from Jenkins Credentials')
+    }
+    environment {
+        SLACK_CHANNEL = "${params.channel}"
+        SLACK_CREDENTIAL_ID = "${params.workspace_credential}"
+    }
+    stages {
+        stage('Notify Start') {
+            steps {
+                script {
+                    slackSend(channel: "${params.channel}", message: "Build Started: \nProject: ${params.project_name} \nBranch: ${params.branch_name} \nLink: ${params.remote_url}", tokenCredentialId: "${params.workspace_credential}")
+                }
+            }
+        }
+        stage('Git Clone') {
+            steps {
+                git branch: "${params.branch_name}", credentialsId: 'Github', url: "${params.repo_url}"
+            }
+        }
+        stage('Creating Build') {
+            steps {
+                withEnv(['PATH+NODE=C:\\Users\\ued\\AppData\\Roaming\\npm']) {
+                    bat "npm i --force"
+                    bat "${params.build_command}"
+                }
+            }
+        }
+        stage('Creating Zip File') {
+            steps {
+                fileOperations([fileZipOperation(folderPath: "dist/${params.project_name}/", outputFolderPath: '')])
+            }
+        }
+        stage('SCP Zip File') {
+            steps {
+                sshPublisher(publishers: [sshPublisherDesc(configName: 'DemoCpanel', transfers: [sshTransfer(cleanRemote: false, excludes: '', execCommand: "mv ${params.project_name}.zip /home/user/${params.remote_url}/", execTimeout: 120000, flatten: false, makeEmptyDirs: false, noDefaultExcludes: false, patternSeparator: '[, ]+', remoteDirectory: '', remoteDirectorySDF: false, removePrefix: '', sourceFiles: "${params.project_name}.zip")], usePromotionTimestamp: false, useWorkspaceInPromotion: false, verbose: false)])
+            }
+        }
+        stage('SSH To Server') {
+            steps {
+                sshPublisher(publishers: [sshPublisherDesc(configName: 'DemoCpanel', transfers: [sshTransfer(cleanRemote: false, excludes: '', execCommand: """
+                    cd /home/user/${params.remote_url}/
+                    yes | unzip ${params.project_name}.zip
+                    mv ${params.project_name}/* .
+                    chown -R user:user *
+                """, execTimeout: 120000, flatten: false, makeEmptyDirs: false, noDefaultExcludes: false, patternSeparator: '[, ]+', remoteDirectory: '', remoteDirectorySDF: false, removePrefix: '', sourceFiles: '')], usePromotionTimestamp: false, useWorkspaceInPromotion: false, verbose: false)])
+            }
+        }
+    }
+    post {
+        always {
+            script {
+                def buildStatus = currentBuild.currentResult ?: 'SUCCESS'
+                slackSend(channel: "${params.channel}", message: "Build: ${buildStatus} \nProject: ${params.project_name} \nBranch: ${params.branch_name} \nLink: ${params.remote_url}")
+            }
+        }
+    }
+}
